@@ -384,15 +384,23 @@ def feature_card(icon, title, description):
 
 def demo_data_exists():
 
+    if (
+        "user" not in st.session_state
+        or st.session_state.user is None
+    ):
+        return False
+
     response = (
         supabase
         .table("experiments")
-        .select(
-            "id"
-        )
+        .select("id")
         .eq(
             "researcher",
             "Demo User"
+        )
+        .eq(
+            "user_id",
+            str(st.session_state.user.id)
         )
         .limit(1)
         .execute()
@@ -620,8 +628,13 @@ def load_demo_data():
     ]
 
     for exp in demo_experiments:
+        st.write(
+            "DEBUG USER ID:",
+            st.session_state.user.id
+        )
 
         experiment_data = {
+            "user_id": str(st.session_state.user.id),
             "experiment_name": exp["name"],
             "researcher": exp["researcher"],
             "experiment_date": exp["date"],
@@ -655,64 +668,7 @@ def load_demo_data():
             .execute()
         )
 
-    demo_inventory = [
-        (
-            "THF",
-            "Solvent",
-            "mL",
-            1500.0,
-            500.0,
-            0.10,
-            "Sigma-Aldrich",
-            "Solvent Cabinet A",
-            str(date.today())
-        ),
-        (
-            "Phenylboronic acid",
-            "Reagent",
-            "g",
-            2.5,
-            1.0,
-            500.0,
-            "Sigma-Aldrich",
-            "Reagent Shelf B",
-            str(date.today())
-        ),
-        (
-            "Pd(PPh3)4",
-            "Catalyst",
-            "g",
-            0.04,
-            0.05,
-            3000.0,
-            "Sigma-Aldrich",
-            "Catalyst Cabinet",
-            str(date.today())
-        )
-    ]
 
-    for item in demo_inventory:
-
-        inventory_data = {
-            "chemical_name": item[0],
-            "category": item[1],
-            "unit": item[2],
-            "current_stock": item[3],
-            "minimum_stock": item[4],
-            "cost_per_unit": item[5],
-            "supplier": item[6],
-            "location": item[7],
-            "last_updated": item[8]
-        }
-
-        (
-            supabase
-            .table("inventory")
-            .insert(
-                inventory_data
-            )
-            .execute()
-        )
 
 def clear_demo_data():
 
@@ -724,27 +680,14 @@ def clear_demo_data():
             "researcher",
             "Demo User"
         )
+        .eq(
+            "user_id",
+            st.session_state.user.id
+        )
         .execute()
     )
 
-    demo_inventory_names = [
-        "THF",
-        "Phenylboronic acid",
-        "Pd(PPh3)4"
-    ]
-
-    for chemical_name in demo_inventory_names:
-
-        (
-            supabase
-            .table("inventory")
-            .delete()
-            .eq(
-                "chemical_name",
-                chemical_name
-            )
-            .execute()
-        )
+    
 
 def save_experiment(
     experiment_name,
