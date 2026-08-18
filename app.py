@@ -768,8 +768,16 @@ def save_experiment(
     solvent_cost_per_l,
     estimated_total_cost
 ):
-
+    if (
+        "user" not in st.session_state
+        or st.session_state.user is None
+    ):
+        raise Exception(
+            "No authenticated user found."
+        )
+    
     experiment_data = {
+        "user_id": st.session_state.user.id,
         "experiment_name": experiment_name,
         "researcher": researcher,
         "experiment_date": str(experiment_date),
@@ -831,6 +839,10 @@ def get_all_experiments():
             "solvent, "
             "solvent_volume, "
             "yield_percent"
+        )
+        .eq(
+            "user_id",
+            st.session_state.user.id
         )
         .order(
             "experiment_date",
@@ -984,6 +996,10 @@ def get_experiments_for_report():
             "key_result, "
             "next_step"
         )
+        .eq(
+            "user_id",
+            st.session_state.user.id
+        )
         .order(
             "experiment_date"
         )
@@ -1051,6 +1067,10 @@ def get_experiments_for_ai_search():
             "next_step, "
             "ai_procedure"
         )
+        .eq(
+            "user_id",
+            st.session_state.user.id
+        )       
         .order(
             "experiment_date"
         )
@@ -1282,6 +1302,10 @@ def get_experiment_by_id(experiment_id):
         .eq(
             "id",
             experiment_id
+        )
+        .eq(
+            "user_id",
+            st.session_state.user.id
         )
         .limit(1)
         .execute()
@@ -3054,6 +3078,24 @@ def init_supabase():
 supabase: Client = init_supabase()
 
 # --------------------------------------------------
+# AUTH CLIENT
+# --------------------------------------------------
+
+def get_auth_client():
+
+    if "auth_client" not in st.session_state:
+
+        st.session_state.auth_client = create_client(
+            st.secrets["SUPABASE_URL"],
+            st.secrets["SUPABASE_KEY"]
+        )
+
+    return st.session_state.auth_client
+
+
+auth_client = get_auth_client()
+
+# --------------------------------------------------
 # CLOUD AI CONNECTION
 # --------------------------------------------------
 
@@ -3206,6 +3248,172 @@ st.markdown(
 )
 
 # --------------------------------------------------
+# AUTHENTICATION
+# --------------------------------------------------
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+
+if st.session_state.user is None:
+
+    st.markdown(
+        """
+        <div style="text-align:center; margin-top:70px;">
+            <h1 style="font-size:2.8rem; margin-bottom:8px;">
+                🧪 LabFlow AI
+            </h1>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        "<p style='text-align:center; font-size:1.1rem; opacity:0.65;'>"
+        "From experiments to intelligence."
+        "</p>",
+        unsafe_allow_html=True
+    )
+    login_tab, signup_tab = st.tabs(
+        [
+            "Log In",
+            "Sign Up"
+        ]
+    )
+
+
+    # --------------------------------------------------
+    # LOGIN
+    # --------------------------------------------------
+
+    with login_tab:
+
+        login_email = st.text_input(
+            "Email",
+            key="login_email"
+        )
+
+        login_password = st.text_input(
+            "Password",
+            type="password",
+            key="login_password"
+        )
+
+        if st.button(
+            "Log In",
+            type="primary",
+            use_container_width=True
+        ):
+
+            try:
+
+                login_response = (
+                    auth_client
+                    .auth
+                    .sign_in_with_password({
+                        "email": login_email,
+                        "password": login_password
+                    })
+                )
+
+                if login_response.user:
+
+                    st.session_state.user = (
+                        login_response.user
+                    )
+
+                    st.success(
+                        "Login successful."
+                    )
+
+                    st.rerun()
+
+            except Exception as e:
+
+                st.error(
+                    f"Login failed: {e}"
+                )
+
+
+    # --------------------------------------------------
+    # SIGN UP
+    # --------------------------------------------------
+
+    with signup_tab:
+
+        signup_email = st.text_input(
+            "Email",
+            key="signup_email"
+        )
+
+        signup_password = st.text_input(
+            "Password",
+            type="password",
+            key="signup_password"
+        )
+
+        signup_password_confirm = st.text_input(
+            "Confirm Password",
+            type="password",
+            key="signup_password_confirm"
+        )
+
+        if st.button(
+            "Create Account",
+            use_container_width=True
+        ):
+
+            if not signup_email:
+
+                st.warning(
+                    "Please enter an email address."
+                )
+
+            elif len(signup_password) < 6:
+
+                st.warning(
+                    "Password must contain at least 6 characters."
+                )
+
+            elif (
+                signup_password
+                != signup_password_confirm
+            ):
+
+                st.warning(
+                    "Passwords do not match."
+                )
+
+            else:
+
+                try:
+
+                    signup_response = (
+                        auth_client
+                        .auth
+                        .sign_up({
+                            "email": signup_email,
+                            "password": signup_password
+                        })
+                    )
+
+                    if signup_response.user:
+
+                        st.success(
+                            "Account created successfully. "
+                            "You can now log in."
+                        )
+
+                except Exception as e:
+
+                    st.error(
+                        f"Sign up failed: {e}"
+                    )
+
+
+    st.stop()
+
+# --------------------------------------------------
 # SIDEBAR NAVIGATION
 # --------------------------------------------------
 
@@ -3220,6 +3428,41 @@ st.sidebar.markdown(
     sidebar_brand,
     unsafe_allow_html=True
 )
+
+# --------------------------------------------------
+# CURRENT USER
+# --------------------------------------------------
+
+current_user = st.session_state.user
+
+if current_user:
+
+    st.sidebar.caption(
+        "Signed in as"
+    )
+
+    st.sidebar.markdown(
+        f"**{current_user.email}**"
+    )
+
+    if st.sidebar.button(
+        "🚪 Log Out",
+        use_container_width=True
+    ):
+
+        try:
+
+            auth_client.auth.sign_out()
+
+        except Exception:
+            pass
+
+        st.session_state.user = None
+
+        if "auth_client" in st.session_state:
+            del st.session_state.auth_client
+
+        st.rerun()
 
 st.sidebar.divider()
 
@@ -3295,6 +3538,10 @@ if page == "🏠 Home":
         .table("experiments")
         .select(
             "id, yield_percent"
+        )
+        .eq(
+            "user_id",
+            st.session_state.user.id
         )
         .execute()
     )
@@ -4069,6 +4316,10 @@ if page == "📚 Experiment History":
             "yield_percent, "
             "status"
         )
+        .eq(
+            "user_id",
+            st.session_state.user.id
+        )
         .order(
             "id",
             desc=True
@@ -4194,6 +4445,10 @@ if page == "📝 Lab Note Generator":
         .table("experiments")
         .select(
             "id, experiment_name, experiment_date"
+        )
+        .eq(
+            "user_id",
+            st.session_state.user.id
         )
         .order(
             "id",
