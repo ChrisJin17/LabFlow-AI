@@ -2,6 +2,8 @@ import streamlit as st
 from datetime import date, datetime, timedelta
 import sqlite3
 import json
+import base64
+from supabase import create_client, Client
 from ollama import chat
 from docx import Document
 from docx.shared import Pt
@@ -21,99 +23,7 @@ from reportlab.platypus import (
     PageBreak,
     Image
 )
-# --------------------------------------------------
-# DATABASE
-# --------------------------------------------------
 
-def init_database():
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS experiments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            experiment_name TEXT NOT NULL,
-            researcher TEXT,
-            experiment_date TEXT,
-            starting_material TEXT,
-            starting_material_mw REAL,
-            starting_material_mass REAL,
-            starting_material_mmol REAL,
-            reagents TEXT,
-            solvent TEXT,
-            solvent_volume REAL,
-            temperature REAL,
-            reaction_time REAL,
-            yield_percent REAL,
-            observation TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-init_database()
-
-def upgrade_database():
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute("PRAGMA table_info(experiments)")
-    existing_columns = [
-        column[1]
-        for column in cursor.fetchall()
-    ]
-
-    new_columns = {
-        "objective": "TEXT",
-        "status": "TEXT",
-        "key_result": "TEXT",
-        "next_step": "TEXT",
-        "solvent_cost_per_l": "REAL",
-        "estimated_total_cost": "REAL",
-        "ai_procedure": "TEXT",
-        "inventory_deducted": "INTEGER DEFAULT 0"
-    }
-
-    for column_name, column_type in new_columns.items():
-        if column_name not in existing_columns:
-            cursor.execute(
-                f"ALTER TABLE experiments "
-                f"ADD COLUMN {column_name} {column_type}"
-            )
-
-    conn.commit()
-    conn.close()
-
-
-upgrade_database()
-
-def init_inventory_database():
-
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chemical_name TEXT NOT NULL,
-            category TEXT,
-            unit TEXT,
-            current_stock REAL DEFAULT 0,
-            minimum_stock REAL DEFAULT 0,
-            cost_per_unit REAL DEFAULT 0,
-            supplier TEXT,
-            location TEXT,
-            last_updated TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-init_inventory_database()
 
 def add_inventory_item(
     chemical_name,
@@ -126,61 +36,64 @@ def add_inventory_item(
     location
 ):
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    inventory_data = {
+        "chemical_name": chemical_name,
+        "category": category,
+        "unit": unit,
+        "current_stock": current_stock,
+        "minimum_stock": minimum_stock,
+        "cost_per_unit": cost_per_unit,
+        "supplier": supplier,
+        "location": location,
+        "last_updated": str(date.today())
+    }
 
-    cursor.execute("""
-        INSERT INTO inventory (
-            chemical_name,
-            category,
-            unit,
-            current_stock,
-            minimum_stock,
-            cost_per_unit,
-            supplier,
-            location,
-            last_updated
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        chemical_name,
-        category,
-        unit,
-        current_stock,
-        minimum_stock,
-        cost_per_unit,
-        supplier,
-        location,
-        str(date.today())
-    ))
-
-    conn.commit()
-    conn.close()
+    (
+        supabase
+        .table("inventory")
+        .insert(inventory_data)
+        .execute()
+    )
 
 def get_inventory():
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("inventory")
+        .select(
+            "id, "
+            "chemical_name, "
+            "category, "
+            "unit, "
+            "current_stock, "
+            "minimum_stock, "
+            "cost_per_unit, "
+            "supplier, "
+            "location, "
+            "last_updated"
+        )
+        .order(
+            "chemical_name"
+        )
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            id,
-            chemical_name,
-            category,
-            unit,
-            current_stock,
-            minimum_stock,
-            cost_per_unit,
-            supplier,
-            location,
-            last_updated
-        FROM inventory
-        ORDER BY chemical_name ASC
-    """)
+    inventory = []
 
-    inventory = cursor.fetchall()
+    for item in response.data:
 
-    conn.close()
+        inventory.append((
+            item["id"],
+            item["chemical_name"],
+            item["category"],
+            item["unit"],
+            item["current_stock"],
+            item["minimum_stock"],
+            item["cost_per_unit"],
+            item["supplier"],
+            item["location"],
+            item["last_updated"]
+        ))
 
     return inventory
 
@@ -190,27 +103,35 @@ def get_inventory():
 
 def get_inventory_item_by_name(chemical_name):
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("inventory")
+        .select(
+            "id, chemical_name, category, unit, "
+            "current_stock, minimum_stock, cost_per_unit"
+        )
+        .ilike(
+            "chemical_name",
+            chemical_name.strip()
+        )
+        .limit(1)
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            id,
-            chemical_name,
-            category,
-            unit,
-            current_stock,
-            minimum_stock,
-            cost_per_unit
-        FROM inventory
-        WHERE LOWER(chemical_name) = LOWER(?)
-    """, (chemical_name.strip(),))
+    if not response.data:
+        return None
 
-    item = cursor.fetchone()
+    item = response.data[0]
 
-    conn.close()
-
-    return item
+    return (
+        item["id"],
+        item["chemical_name"],
+        item["category"],
+        item["unit"],
+        item["current_stock"],
+        item["minimum_stock"],
+        item["cost_per_unit"]
+    )
 
 
 def check_inventory_amount(chemical_name, required_amount):
@@ -238,51 +159,73 @@ def check_inventory_amount(chemical_name, required_amount):
     return True, None
 
 
-def deduct_inventory(chemical_name, amount):
+def deduct_inventory(
+    chemical_name,
+    amount
+):
 
     if not chemical_name or amount <= 0:
         return
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    item = get_inventory_item_by_name(
+        chemical_name
+    )
 
-    cursor.execute("""
-        UPDATE inventory
-        SET
-            current_stock = current_stock - ?,
-            last_updated = ?
-        WHERE LOWER(chemical_name) = LOWER(?)
-    """, (
-        amount,
-        str(date.today()),
-        chemical_name.strip()
-    ))
+    if item is None:
+        return
 
-    conn.commit()
-    conn.close()
+    inventory_id = item[0]
+    current_stock = item[4] or 0
 
-def restore_inventory(chemical_name, amount):
+    new_stock = current_stock - amount
+
+    (
+        supabase
+        .table("inventory")
+        .update({
+            "current_stock": new_stock,
+            "last_updated": str(date.today())
+        })
+        .eq(
+            "id",
+            inventory_id
+        )
+        .execute()
+    )
+
+def restore_inventory(
+    chemical_name,
+    amount
+):
 
     if not chemical_name or amount <= 0:
         return
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    item = get_inventory_item_by_name(
+        chemical_name
+    )
 
-    cursor.execute("""
-        UPDATE inventory
-        SET
-            current_stock = current_stock + ?,
-            last_updated = ?
-        WHERE LOWER(chemical_name) = LOWER(?)
-    """, (
-        amount,
-        str(date.today()),
-        chemical_name.strip()
-    ))
+    if item is None:
+        return
 
-    conn.commit()
-    conn.close()
+    inventory_id = item[0]
+    current_stock = item[4] or 0
+
+    new_stock = current_stock + amount
+
+    (
+        supabase
+        .table("inventory")
+        .update({
+            "current_stock": new_stock,
+            "last_updated": str(date.today())
+        })
+        .eq(
+            "id",
+            inventory_id
+        )
+        .execute()
+    )
 
 def restore_experiment_inventory(
     reagents_json,
@@ -407,21 +350,22 @@ def deduct_experiment_inventory(
             solvent_volume
         )
 
-def mark_inventory_deducted(experiment_id):
+def mark_inventory_deducted(
+    experiment_id
+):
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE experiments
-        SET inventory_deducted = 1
-        WHERE id = ?
-    """, (
-        experiment_id,
-    ))
-
-    conn.commit()
-    conn.close()
+    (
+        supabase
+        .table("experiments")
+        .update({
+            "inventory_deducted": 1
+        })
+        .eq(
+            "id",
+            experiment_id
+        )
+        .execute()
+    )
 
 def feature_card(icon, title, description):
 
@@ -440,25 +384,25 @@ def feature_card(icon, title, description):
 
 def demo_data_exists():
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id"
+        )
+        .eq(
+            "researcher",
+            "Demo User"
+        )
+        .limit(1)
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT COUNT(*)
-        FROM experiments
-        WHERE researcher = 'Demo User'
-    """)
-
-    count = cursor.fetchone()[0]
-
-    conn.close()
-
-    return count > 0
+    return bool(response.data)
 
 def load_demo_data():
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+  
 
     demo_experiments = [
         {
@@ -677,54 +621,39 @@ def load_demo_data():
 
     for exp in demo_experiments:
 
-        cursor.execute("""
-            INSERT INTO experiments (
-                experiment_name,
-                researcher,
-                experiment_date,
-                starting_material,
-                starting_material_mw,
-                starting_material_mass,
-                starting_material_mmol,
-                reagents,
-                solvent,
-                solvent_volume,
-                temperature,
-                reaction_time,
-                yield_percent,
-                observation,
-                objective,
-                status,
-                key_result,
-                next_step,
-                solvent_cost_per_l,
-                estimated_total_cost,
-                ai_procedure
+        experiment_data = {
+            "experiment_name": exp["name"],
+            "researcher": exp["researcher"],
+            "experiment_date": exp["date"],
+            "starting_material": exp["starting_material"],
+            "starting_material_mw": exp["sm_mw"],
+            "starting_material_mass": exp["sm_mass"],
+            "starting_material_mmol": exp["sm_mmol"],
+            "reagents": exp["reagents"],
+            "solvent": exp["solvent"],
+            "solvent_volume": exp["solvent_volume"],
+            "temperature": exp["temperature"],
+            "reaction_time": exp["reaction_time"],
+            "yield_percent": exp["yield"],
+            "observation": exp["observation"],
+            "objective": exp["objective"],
+            "status": exp["status"],
+            "key_result": exp["key_result"],
+            "next_step": exp["next_step"],
+            "solvent_cost_per_l": exp["solvent_cost_per_l"],
+            "estimated_total_cost": exp["estimated_total_cost"],
+            "ai_procedure": exp["ai_procedure"],
+            "inventory_deducted": 0
+        }
+
+        (
+            supabase
+            .table("experiments")
+            .insert(
+                experiment_data
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            exp["name"],
-            exp["researcher"],
-            exp["date"],
-            exp["starting_material"],
-            exp["sm_mw"],
-            exp["sm_mass"],
-            exp["sm_mmol"],
-            json.dumps(exp["reagents"]),
-            exp["solvent"],
-            exp["solvent_volume"],
-            exp["temperature"],
-            exp["reaction_time"],
-            exp["yield"],
-            exp["observation"],
-            exp["objective"],
-            exp["status"],
-            exp["key_result"],
-            exp["next_step"],
-            exp["solvent_cost_per_l"],
-            exp["estimated_total_cost"],
-            exp["ai_procedure"]
-        ))
+            .execute()
+        )
 
     demo_inventory = [
         (
@@ -764,45 +693,58 @@ def load_demo_data():
 
     for item in demo_inventory:
 
-        cursor.execute("""
-            INSERT INTO inventory (
-                chemical_name,
-                category,
-                unit,
-                current_stock,
-                minimum_stock,
-                cost_per_unit,
-                supplier,
-                location,
-                last_updated
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, item)
+        inventory_data = {
+            "chemical_name": item[0],
+            "category": item[1],
+            "unit": item[2],
+            "current_stock": item[3],
+            "minimum_stock": item[4],
+            "cost_per_unit": item[5],
+            "supplier": item[6],
+            "location": item[7],
+            "last_updated": item[8]
+        }
 
-    conn.commit()
-    conn.close()
+        (
+            supabase
+            .table("inventory")
+            .insert(
+                inventory_data
+            )
+            .execute()
+        )
 
 def clear_demo_data():
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        DELETE FROM experiments
-        WHERE researcher = 'Demo User'
-    """)
-
-    cursor.execute("""
-        DELETE FROM inventory
-        WHERE chemical_name IN (
-            'THF',
-            'Phenylboronic acid',
-            'Pd(PPh3)4'
+    (
+        supabase
+        .table("experiments")
+        .delete()
+        .eq(
+            "researcher",
+            "Demo User"
         )
-    """)
+        .execute()
+    )
 
-    conn.commit()
-    conn.close()
+    demo_inventory_names = [
+        "THF",
+        "Phenylboronic acid",
+        "Pd(PPh3)4"
+    ]
+
+    for chemical_name in demo_inventory_names:
+
+        (
+            supabase
+            .table("inventory")
+            .delete()
+            .eq(
+                "chemical_name",
+                chemical_name
+            )
+            .execute()
+        )
 
 def save_experiment(
     experiment_name,
@@ -826,120 +768,143 @@ def save_experiment(
     solvent_cost_per_l,
     estimated_total_cost
 ):
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
 
-    cursor.execute("""
-        INSERT INTO experiments (
-            experiment_name,
-            researcher,
-            experiment_date,
-            starting_material,
-            starting_material_mw,
-            starting_material_mass,
-            starting_material_mmol,
-            reagents,
-            solvent,
-            solvent_volume,
-            temperature,
-            reaction_time,
-            yield_percent,
-            observation,
-            objective,
-            status,
-            key_result,
-            next_step,
-            solvent_cost_per_l,
-            estimated_total_cost
+    experiment_data = {
+        "experiment_name": experiment_name,
+        "researcher": researcher,
+        "experiment_date": str(experiment_date),
+
+        "starting_material": sm_name,
+        "starting_material_mw": sm_mw,
+        "starting_material_mass": sm_mass,
+        "starting_material_mmol": sm_mmol,
+
+        "reagents": reagents,
+
+        "solvent": solvent,
+        "solvent_volume": solvent_volume,
+
+        "temperature": temperature,
+        "reaction_time": reaction_time,
+
+        "yield_percent": yield_percent,
+        "observation": observation,
+
+        "objective": objective,
+        "status": status,
+        "key_result": key_result,
+        "next_step": next_step,
+
+        "solvent_cost_per_l": solvent_cost_per_l,
+        "estimated_total_cost": estimated_total_cost,
+
+        "inventory_deducted": 0
+    }
+
+    response = (
+        supabase
+        .table("experiments")
+        .insert(experiment_data)
+        .execute()
+    )
+
+    if not response.data:
+        raise Exception(
+            "Supabase did not return the saved experiment."
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        experiment_name,
-        researcher,
-        str(experiment_date),
-        sm_name,
-        sm_mw,
-        sm_mass,
-        sm_mmol,
-        json.dumps(reagents),
-        solvent,
-        solvent_volume,
-        temperature,
-        reaction_time,
-        yield_percent,
-        observation,
-        objective,
-        status,
-        key_result,
-        next_step,
-        solvent_cost_per_l,
-        estimated_total_cost
-    ))
 
-    conn.commit()
-    experiment_id = cursor.lastrowid
-    conn.close()
+    experiment_id = response.data[0]["id"]
 
     return experiment_id
 
 def get_all_experiments():
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT
-            id,
-            experiment_name,
-            researcher,
-            experiment_date,
-            starting_material,
-            solvent,
-            solvent_volume,
-            yield_percent
-        FROM experiments
-        ORDER BY experiment_date DESC, id DESC
-    """)
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, "
+            "experiment_name, "
+            "researcher, "
+            "experiment_date, "
+            "starting_material, "
+            "solvent, "
+            "solvent_volume, "
+            "yield_percent"
+        )
+        .order(
+            "experiment_date",
+            desc=True
+        )
+        .order(
+            "id",
+            desc=True
+        )
+        .execute()
+    )
 
-    experiments = cursor.fetchall()
-    conn.close()
+    experiments = []
+
+    for exp in response.data:
+
+        experiments.append((
+            exp["id"],
+            exp["experiment_name"],
+            exp["researcher"],
+            exp["experiment_date"],
+            exp["starting_material"],
+            exp["solvent"],
+            exp["solvent_volume"],
+            exp["yield_percent"]
+        ))
 
     return experiments
 
 def delete_experiment(experiment_id):
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
     # --------------------------------------------------
-    # GET EXPERIMENT INVENTORY DATA
+    # GET EXPERIMENT DATA BEFORE DELETION
     # --------------------------------------------------
 
-    cursor.execute("""
-        SELECT
-            reagents,
-            solvent,
-            solvent_volume,
-            inventory_deducted
-        FROM experiments
-        WHERE id = ?
-    """, (
-        experiment_id,
-    ))
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, reagents, solvent, "
+            "solvent_volume, inventory_deducted"
+        )
+        .eq(
+            "id",
+            experiment_id
+        )
+        .limit(1)
+        .execute()
+    )
 
-    experiment = cursor.fetchone()
-
-    if experiment is None:
-
-        conn.close()
-
+    if not response.data:
         return False
 
-    reagents_json = experiment[0]
-    solvent = experiment[1]
-    solvent_volume = experiment[2] or 0
-    inventory_deducted = experiment[3] or 0
+    experiment = response.data[0]
 
-    conn.close()
+    reagents = experiment.get(
+        "reagents",
+        []
+    ) or []
+
+    solvent = experiment.get(
+        "solvent",
+        ""
+    )
+
+    solvent_volume = experiment.get(
+        "solvent_volume",
+        0
+    ) or 0
+
+    inventory_deducted = experiment.get(
+        "inventory_deducted",
+        0
+    ) or 0
 
     # --------------------------------------------------
     # RESTORE INVENTORY
@@ -947,104 +912,183 @@ def delete_experiment(experiment_id):
 
     if inventory_deducted == 1:
 
-        restore_experiment_inventory(
-            reagents_json,
-            solvent,
-            solvent_volume
+        for reagent in reagents:
+
+            chemical_name = reagent.get(
+                "Chemical",
+                ""
+            )
+
+            required_mass_mg = reagent.get(
+                "Required mass (mg)",
+                0
+            ) or 0
+
+            if chemical_name:
+
+                required_mass_g = (
+                    required_mass_mg / 1000
+                )
+
+                restore_inventory(
+                    chemical_name,
+                    required_mass_g
+                )
+
+        if solvent and solvent_volume > 0:
+
+            restore_inventory(
+                solvent,
+                solvent_volume
+            )
+
+    # --------------------------------------------------
+    # DELETE EXPERIMENT
+    # --------------------------------------------------
+
+    (
+        supabase
+        .table("experiments")
+        .delete()
+        .eq(
+            "id",
+            experiment_id
         )
-
-    # --------------------------------------------------
-    # DELETE EXPERIMENT AND ATTACHMENTS
-    # --------------------------------------------------
-
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        DELETE FROM attachments
-        WHERE experiment_id = ?
-    """, (
-        experiment_id,
-    ))
-
-    cursor.execute("""
-        DELETE FROM experiments
-        WHERE id = ?
-    """, (
-        experiment_id,
-    ))
-
-    conn.commit()
-    conn.close()
+        .execute()
+    )
 
     return True
 
 def get_experiments_for_report():
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT
-            id,
-            experiment_name,
-            researcher,
-            experiment_date,
-            starting_material,
-            starting_material_mass,
-            starting_material_mmol,
-            reagents,
-            solvent,
-            solvent_volume,
-            temperature,
-            reaction_time,
-            yield_percent,
-            observation,
-            objective,
-            status,
-            key_result,
-            next_step
-        FROM experiments
-        ORDER BY experiment_date ASC, id ASC
-    """)
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, "
+            "experiment_name, "
+            "researcher, "
+            "experiment_date, "
+            "starting_material, "
+            "starting_material_mass, "
+            "starting_material_mmol, "
+            "reagents, "
+            "solvent, "
+            "solvent_volume, "
+            "temperature, "
+            "reaction_time, "
+            "yield_percent, "
+            "observation, "
+            "objective, "
+            "status, "
+            "key_result, "
+            "next_step"
+        )
+        .order(
+            "experiment_date"
+        )
+        .order(
+            "id"
+        )
+        .execute()
+    )
 
-    experiments = cursor.fetchall()
-    conn.close()
+    experiments = []
+
+    for exp in response.data:
+
+        experiments.append((
+            exp["id"],
+            exp["experiment_name"],
+            exp["researcher"],
+            exp["experiment_date"],
+            exp["starting_material"],
+            exp["starting_material_mass"],
+            exp["starting_material_mmol"],
+
+            # Keep old report code compatible
+            json.dumps(
+                exp["reagents"] or []
+            ),
+
+            exp["solvent"],
+            exp["solvent_volume"],
+            exp["temperature"],
+            exp["reaction_time"],
+            exp["yield_percent"],
+            exp["observation"],
+            exp["objective"],
+            exp["status"],
+            exp["key_result"],
+            exp["next_step"]
+        ))
 
     return experiments
 
 def get_experiments_for_ai_search():
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, "
+            "experiment_name, "
+            "researcher, "
+            "experiment_date, "
+            "starting_material, "
+            "starting_material_mass, "
+            "starting_material_mmol, "
+            "reagents, "
+            "solvent, "
+            "solvent_volume, "
+            "temperature, "
+            "reaction_time, "
+            "yield_percent, "
+            "observation, "
+            "objective, "
+            "status, "
+            "key_result, "
+            "next_step, "
+            "ai_procedure"
+        )
+        .order(
+            "experiment_date"
+        )
+        .order(
+            "id"
+        )
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            id,
-            experiment_name,
-            researcher,
-            experiment_date,
-            starting_material,
-            starting_material_mass,
-            starting_material_mmol,
-            reagents,
-            solvent,
-            solvent_volume,
-            temperature,
-            reaction_time,
-            yield_percent,
-            observation,
-            objective,
-            status,
-            key_result,
-            next_step,
-            ai_procedure
-        FROM experiments
-        ORDER BY experiment_date ASC, id ASC
-    """)
+    experiments = []
 
-    experiments = cursor.fetchall()
+    for exp in response.data:
 
-    conn.close()
+        experiments.append((
+            exp["id"],
+            exp["experiment_name"],
+            exp["researcher"],
+            exp["experiment_date"],
+            exp["starting_material"],
+            exp["starting_material_mass"],
+            exp["starting_material_mmol"],
+
+            json.dumps(
+                exp["reagents"] or []
+            ),
+
+            exp["solvent"],
+            exp["solvent_volume"],
+            exp["temperature"],
+            exp["reaction_time"],
+            exp["yield_percent"],
+            exp["observation"],
+            exp["objective"],
+            exp["status"],
+            exp["key_result"],
+            exp["next_step"],
+            exp["ai_procedure"]
+        ))
 
     return experiments
 
@@ -1217,41 +1261,76 @@ def filter_experiments_for_search(
 
 def get_experiment_by_id(experiment_id):
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, "
+            "experiment_name, "
+            "researcher, "
+            "experiment_date, "
+            "starting_material, "
+            "starting_material_mw, "
+            "starting_material_mass, "
+            "starting_material_mmol, "
+            "reagents, "
+            "solvent, "
+            "solvent_volume, "
+            "temperature, "
+            "reaction_time, "
+            "yield_percent, "
+            "observation, "
+            "objective, "
+            "status, "
+            "key_result, "
+            "next_step, "
+            "estimated_total_cost, "
+            "ai_procedure"
+        )
+        .eq(
+            "id",
+            experiment_id
+        )
+        .limit(1)
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            id,
-            experiment_name,
-            researcher,
-            experiment_date,
-            starting_material,
-            starting_material_mw,
-            starting_material_mass,
-            starting_material_mmol,
-            reagents,
-            solvent,
-            solvent_volume,
-            temperature,
-            reaction_time,
-            yield_percent,
-            observation,
-            objective,
-            status,
-            key_result,
-            next_step,
-            estimated_total_cost,
-             ai_procedure
-        FROM experiments
-        WHERE id = ?
-    """, (
-        experiment_id,
-    ))
+    if not response.data:
+        return None
 
-    experiment = cursor.fetchone()
+    exp = response.data[0]
 
-    conn.close()
+    # Keep the original SQLite-style tuple structure
+    # so existing LabFlow code does not need to change.
+    experiment = (
+        exp["id"],
+        exp["experiment_name"],
+        exp["researcher"],
+        exp["experiment_date"],
+        exp["starting_material"],
+        exp["starting_material_mw"],
+        exp["starting_material_mass"],
+        exp["starting_material_mmol"],
+
+        # Supabase stores reagents as JSONB.
+        # Convert back to JSON string for old LabFlow code.
+        json.dumps(
+            exp["reagents"] or []
+        ),
+
+        exp["solvent"],
+        exp["solvent_volume"],
+        exp["temperature"],
+        exp["reaction_time"],
+        exp["yield_percent"],
+        exp["observation"],
+        exp["objective"],
+        exp["status"],
+        exp["key_result"],
+        exp["next_step"],
+        exp["estimated_total_cost"],
+        exp["ai_procedure"]
+    )
 
     return experiment
 
@@ -1260,46 +1339,20 @@ def save_ai_procedure(
     ai_procedure
 ):
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE experiments
-        SET ai_procedure = ?
-        WHERE id = ?
-    """, (
-        ai_procedure,
-        experiment_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-def init_attachments_database():
-
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS attachments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            experiment_id INTEGER NOT NULL,
-            file_name TEXT NOT NULL,
-            file_type TEXT,
-            attachment_category TEXT,
-            file_data BLOB NOT NULL,
-            notes TEXT,
-            uploaded_at TEXT,
-            FOREIGN KEY (experiment_id)
-                REFERENCES experiments(id)
+    (
+        supabase
+        .table("experiments")
+        .update({
+            "ai_procedure": ai_procedure
+        })
+        .eq(
+            "id",
+            experiment_id
         )
-    """)
-
-    conn.commit()
-    conn.close()
+        .execute()
+    )
 
 
-init_attachments_database()
 
 def save_attachment(
     experiment_id,
@@ -1308,63 +1361,81 @@ def save_attachment(
     notes
 ):
 
-    file_data = uploaded_file.getvalue()
+    file_bytes = uploaded_file.getvalue()
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    file_data_base64 = base64.b64encode(
+        file_bytes
+    ).decode("utf-8")
 
-    cursor.execute("""
-        INSERT INTO attachments (
-            experiment_id,
-            file_name,
-            file_type,
-            attachment_category,
-            file_data,
-            notes,
-            uploaded_at
+    attachment_data = {
+        "experiment_id": experiment_id,
+        "file_name": uploaded_file.name,
+        "file_type": uploaded_file.type,
+        "attachment_category": attachment_category,
+        "file_data": file_data_base64,
+        "notes": notes,
+        "uploaded_at": datetime.now().isoformat()
+    }
+
+    (
+        supabase
+        .table("attachments")
+        .insert(
+            attachment_data
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        experiment_id,
-        uploaded_file.name,
-        uploaded_file.type,
-        attachment_category,
-        file_data,
-        notes,
-        datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-    ))
-
-    conn.commit()
-    conn.close()
-
+        .execute()
+    )
+    
 def get_attachments(
     experiment_id
 ):
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("attachments")
+        .select(
+            "id, "
+            "file_name, "
+            "file_type, "
+            "attachment_category, "
+            "file_data, "
+            "notes, "
+            "uploaded_at"
+        )
+        .eq(
+            "experiment_id",
+            experiment_id
+        )
+        .order(
+            "id",
+            desc=True
+        )
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            id,
-            file_name,
-            file_type,
-            attachment_category,
-            file_data,
-            notes,
-            uploaded_at
-        FROM attachments
-        WHERE experiment_id = ?
-        ORDER BY id DESC
-    """, (
-        experiment_id,
-    ))
+    attachments = []
 
-    attachments = cursor.fetchall()
+    for item in response.data:
 
-    conn.close()
+        try:
+
+            file_bytes = base64.b64decode(
+                item["file_data"]
+            )
+
+        except Exception:
+
+            file_bytes = b""
+
+        attachments.append((
+            item["id"],
+            item["file_name"],
+            item["file_type"],
+            item["attachment_category"],
+            file_bytes,
+            item["notes"],
+            item["uploaded_at"]
+        ))
 
     return attachments
 
@@ -2994,6 +3065,36 @@ st.set_page_config(
     layout="wide"
 )
 
+# --------------------------------------------------
+# SUPABASE CONNECTION
+# --------------------------------------------------
+
+@st.cache_resource
+def init_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase: Client = init_supabase()
+
+try:
+    test_response = (
+        supabase
+        .table("experiments")
+        .select("id")
+        .limit(1)
+        .execute()
+    )
+
+    print("SUPABASE CONNECTION SUCCESS")
+
+except Exception as e:
+
+    print(
+        "SUPABASE CONNECTION FAILED:",
+        e
+    )
+
 st.markdown(
     """
     <style>
@@ -3189,39 +3290,64 @@ if page == "🏠 Home":
     # KEY METRICS
     # --------------------------------------------------
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT COUNT(*) FROM experiments"
+    experiment_response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, yield_percent"
+        )
+        .execute()
     )
 
-    total_experiments = cursor.fetchone()[0]
-
-    cursor.execute("""
-        SELECT AVG(yield_percent)
-        FROM experiments
-        WHERE yield_percent IS NOT NULL
-    """)
-
-    average_yield = cursor.fetchone()[0]
-
-    cursor.execute(
-        "SELECT COUNT(*) FROM inventory"
+    experiment_rows = (
+        experiment_response.data
+        or []
     )
 
-    total_inventory_items = cursor.fetchone()[0]
+    total_experiments = len(
+        experiment_rows
+    )
 
-    cursor.execute("""
-        SELECT COUNT(*)
-        FROM inventory
-        WHERE current_stock <= minimum_stock
-    """)
+    yield_values = [
+        row["yield_percent"]
+        for row in experiment_rows
+        if row["yield_percent"] is not None
+    ]
 
-    low_stock_items = cursor.fetchone()[0]
+    average_yield = (
+        sum(yield_values)
+        / len(yield_values)
+        if yield_values
+        else None
+    )
 
-    conn.close()
+    inventory_response = (
+        supabase
+        .table("inventory")
+        .select(
+            "id, current_stock, minimum_stock"
+        )
+        .execute()
+    )
 
+    inventory_rows = (
+        inventory_response.data
+        or []
+    )
+
+    total_inventory_items = len(
+        inventory_rows
+    )
+
+    low_stock_items = len([
+        item
+        for item in inventory_rows
+        if (
+            (item["current_stock"] or 0)
+            <=
+            (item["minimum_stock"] or 0)
+        )
+    ])   
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -3931,38 +4057,56 @@ if page == "📚 Experiment History":
     )
     st.divider()
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, "
+            "experiment_name, "
+            "researcher, "
+            "experiment_date, "
+            "starting_material, "
+            "yield_percent, "
+            "status"
+        )
+        .order(
+            "id",
+            desc=True
+        )
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            id,
-            experiment_name,
-            researcher,
-            experiment_date,
-            starting_material,
-            yield_percent,
-            status
-        FROM experiments
-        ORDER BY id DESC
-    """)
-
-    experiments = cursor.fetchall()
-    conn.close()
+    experiments = response.data    
 
     if experiments:
 
         history_data = []
 
         for exp in experiments:
+
             history_data.append({
-                "Experiment ID": f"EXP-{exp[0]:04d}",
-                "Experiment": exp[1],
-                "Researcher": exp[2],
-                "Date": exp[3],
-                "Starting Material": exp[4],
-                "Yield (%)": exp[5],
-                "Status": exp[6] or "Not specified"
+                "Experiment ID": (
+                    f"EXP-{exp['id']:04d}"
+                ),
+                "Experiment": exp[
+                    "experiment_name"
+                ],
+                "Researcher": exp[
+                    "researcher"
+                ],
+                "Date": exp[
+                    "experiment_date"
+                ],
+                "Starting Material": exp[
+                    "starting_material"
+                ],
+                "Yield (%)": exp[
+                    "yield_percent"
+                ],
+                "Status": (
+                    exp["status"]
+                    or "Not specified"
+                )
             })
 
         st.dataframe(
@@ -3981,10 +4125,10 @@ if page == "📚 Experiment History":
         
         delete_options = {
             (
-                f"EXP-{exp[0]:04d} | "
-                f"{exp[1]} | "
-                f"{exp[3]}"
-            ): exp[0]
+                f"EXP-{exp['id']:04d} | "
+                f"{exp['experiment_name']} | "
+                f"{exp['experiment_date']}"
+            ): exp["id"]
             for exp in experiments
         }
 
@@ -4015,15 +4159,24 @@ if page == "📚 Experiment History":
 
             else:
 
-                delete_experiment(
+                deleted = delete_experiment(
                     selected_delete_id
                 )
 
-                st.success(
-                    f"EXP-{selected_delete_id:04d} deleted successfully."
-                )
+                if deleted:
 
-                st.rerun()
+                    st.success(
+                        f"EXP-{selected_delete_id:04d} "
+                        f"deleted successfully."
+                    )
+
+                    st.rerun()
+
+                else:
+
+                    st.error(
+                        "Experiment could not be found."
+                    )
     else:
         st.info("No experiments saved yet.")
 
@@ -4036,21 +4189,27 @@ if page == "📝 Lab Note Generator":
     )
     st.divider()
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, experiment_name, experiment_date"
+        )
+        .order(
+            "id",
+            desc=True
+        )
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            id,
-            experiment_name,
-            experiment_date
-        FROM experiments
-        ORDER BY id DESC
-    """)
-
-    experiment_options = cursor.fetchall()
-
-    conn.close()
+    experiment_options = [
+        (
+            exp["id"],
+            exp["experiment_name"],
+            exp["experiment_date"]
+        )
+        for exp in response.data
+    ]
 
     if not experiment_options:
 
@@ -5684,24 +5843,41 @@ if page == "⚙️ Lab Manager":
 
     st.divider()
 
-    conn = sqlite3.connect("labflow.db")
-    cursor = conn.cursor()
+    response = (
+        supabase
+        .table("experiments")
+        .select(
+            "id, "
+            "experiment_name, "
+            "researcher, "
+            "experiment_date, "
+            "solvent, "
+            "solvent_volume, "
+            "estimated_total_cost"
+        )
+        .order(
+            "experiment_date",
+            desc=True
+        )
+        .order(
+            "id",
+            desc=True
+        )
+        .execute()
+    )
 
-    cursor.execute("""
-        SELECT
-            id,
-            experiment_name,
-            researcher,
-            experiment_date,
-            solvent,
-            solvent_volume,
-            estimated_total_cost
-        FROM experiments
-        ORDER BY experiment_date DESC, id DESC
-    """)
-
-    manager_experiments = cursor.fetchall()
-    conn.close()
+    manager_experiments = [
+        (
+            exp["id"],
+            exp["experiment_name"],
+            exp["researcher"],
+            exp["experiment_date"],
+            exp["solvent"],
+            exp["solvent_volume"],
+            exp["estimated_total_cost"]
+        )
+        for exp in response.data
+    ]
 
     if not manager_experiments:
 
