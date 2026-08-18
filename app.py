@@ -4,7 +4,7 @@ import sqlite3
 import json
 import base64
 from supabase import create_client, Client
-from ollama import chat
+from google import genai
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -1170,17 +1170,9 @@ Experimental records:
 {experiment_text}
 """
 
-    response = chat(
-        model="llama3.2:3b",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+    return cloud_ai_chat(
+        prompt
     )
-
-    return response.message.content
 
 import re
 
@@ -2958,17 +2950,9 @@ Experimental records:
 {experiment_text}
 """
 
-    response = chat(
-        model="llama3.2:3b",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+    return cloud_ai_chat(
+        prompt
     )
-
-    return response.message.content
 
 def generate_professional_procedure(
     experiment_name,
@@ -3043,17 +3027,9 @@ Requirements:
 - Write one concise experimental paragraph.
 """
 
-    response = chat(
-        model="llama3.2:3b",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+    return cloud_ai_chat(
+        prompt
     )
-
-    return response.message.content
 
 # --------------------------------------------------
 # PAGE SETTINGS
@@ -3076,6 +3052,30 @@ def init_supabase():
     return create_client(url, key)
 
 supabase: Client = init_supabase()
+
+# --------------------------------------------------
+# CLOUD AI CONNECTION
+# --------------------------------------------------
+
+@st.cache_resource
+def init_gemini():
+
+    return genai.Client(
+        api_key=st.secrets["GEMINI_API_KEY"]
+    )
+
+
+gemini_client = init_gemini()
+
+
+def cloud_ai_chat(prompt):
+
+    response = gemini_client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=prompt
+    )
+
+    return response.text
 
 try:
     test_response = (
