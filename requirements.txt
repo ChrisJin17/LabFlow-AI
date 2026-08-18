@@ -1,5 +1,5 @@
 streamlit
-ollama
 python-docx
 reportlab
 supabase
+google-genai
