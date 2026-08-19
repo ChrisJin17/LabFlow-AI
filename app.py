@@ -3752,15 +3752,30 @@ if page == "🧪 New Experiment":
 
     st.divider()
 
+    st.header("Research Context")
+
+    objective = st.text_area(
+        "🎯 Objective",
+        placeholder="What is the purpose of this experiment? e.g. Investigate whether increasing catalyst loading improves reaction conversion."
+    )
     # --------------------------------------------------
     # REACTION SETUP
     # --------------------------------------------------
 
-    st.header("Reaction Setup")
+    # --------------------------------------------------
+    # CHEMICALS USED
+    # --------------------------------------------------
 
-    st.subheader("Starting Material")
+    st.header("Chemicals Used")
 
-    col1, col2, col3 = st.columns(3)
+    st.subheader("Reference Chemical")
+
+    st.caption(
+        "Select one chemical as the 1.00 equiv reference. "
+        "Other chemical quantities will be calculated relative to it."
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         sm_name = st.text_input(
@@ -3783,14 +3798,24 @@ if page == "🧪 New Experiment":
             value=0.0,
             step=1.0
         )
+    with col4:
+        sm_cost_per_g = st.number_input(
+            "Cost (HKD/g)",
+            min_value=0.0,
+            value=0.0,
+            step=0.1
+        )
 
     # Calculate mmol
     if sm_mw > 0:
         sm_mmol = sm_mass / sm_mw
     else:
         sm_mmol = 0.0
+    sm_cost = (
+                sm_mass / 1000
+            ) * sm_cost_per_g
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         st.metric(
@@ -3803,6 +3828,11 @@ if page == "🧪 New Experiment":
             "Equivalent",
             "1.00 equiv"
         )
+    with col3:
+        st.metric(
+            "Estimated Cost",
+            f"HK${sm_cost:.2f}"
+        )
 
     st.divider()
 
@@ -3810,12 +3840,16 @@ if page == "🧪 New Experiment":
     # REAGENT TABLE
     # --------------------------------------------------
 
-    st.subheader("Reagents")
+    # --------------------------------------------------
+    # CHEMICAL INFORMATION
+    # --------------------------------------------------
+
+    st.subheader("Chemical Information")
 
     st.caption(
-        "Add reagents, catalysts, bases and additives. "
+        "Add all additional chemicals used in the experiment. "
         "Required amounts are calculated automatically "
-        "from the starting material."
+        "relative to the reference chemical."
     )
 
     # Create reagent storage
@@ -3843,10 +3877,13 @@ if page == "🧪 New Experiment":
                 "Role",
                 options=[
                     "Reagent",
-                    "Base",
+                    "Reactant",
                     "Catalyst",
+                    "Base",
+                    "Acid",
                     "Ligand",
-                    "Additive"
+                    "Additive",
+                    "Other"
                 ]
             ),
             "MW (g/mol)": st.column_config.NumberColumn(
@@ -3896,7 +3933,7 @@ if page == "🧪 New Experiment":
             "Estimated Cost (HKD)": round(reagent_cost, 2)
         })
 
-    st.markdown("#### Calculated Quantities")
+    st.markdown("#### Calculated Chemical Quantities")
 
     st.dataframe(
         calculated_reagents,
@@ -3976,22 +4013,12 @@ if page == "🧪 New Experiment":
     )
 
     st.divider()
-
     # --------------------------------------------------
-    # RESEARCH CONTEXT
+    # EXPERIMENT SUMMARY
     # --------------------------------------------------
 
-    st.header("Research Context")
+    st.header("Experiment Summary")
 
-    objective = st.text_area(
-        "🎯 Objective",
-        placeholder=(
-            "What is the purpose of this experiment? "
-            "e.g. Investigate whether increasing catalyst "
-            "loading improves reaction conversion."
-        ),
-        height=100
-    )
 
     status = st.selectbox(
         "📌 Experiment Status",
@@ -4035,7 +4062,8 @@ if page == "🧪 New Experiment":
     )
 
     estimated_total_cost = (
-        total_reagent_cost
+        sm_cost
+        + total_reagent_cost
         + solvent_cost
     )
     st.metric(
@@ -4065,7 +4093,7 @@ if page == "🧪 New Experiment":
         elif not sm_name:
 
             st.error(
-                "Please enter a starting material."
+                "Please enter a reference chemical."
             )
 
         else:
@@ -4175,7 +4203,7 @@ if page == "🧪 New Experiment":
                     st.write("---")
 
                     st.write(
-                        f"**Starting Material:** "
+                        f"**Reference Chemical:** "
                         f"{sm_name} — "
                         f"{sm_mass:.1f} mg, "
                         f"{sm_mmol:.3f} mmol, "
@@ -4279,9 +4307,6 @@ if page == "📚 Experiment History":
         for exp in experiments:
 
             history_data.append({
-                "Experiment ID": (
-                    f"EXP-{exp['id']:04d}"
-                ),
                 "Experiment": exp[
                     "experiment_name"
                 ],
@@ -6008,7 +6033,6 @@ if page == "📦 Inventory":
                 stock_status = "✅ In Stock"
 
             inventory_data.append({
-                "ID": item[0],
                 "Chemical": item[1],
                 "Category": item[2],
                 "Unit": item[3],
